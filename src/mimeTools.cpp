@@ -1,4 +1,4 @@
-// This file is part of Notepad++ plugin MIME Tools project
+﻿// This file is part of Notepad++ plugin MIME Tools project
 // Copyright (C)2023 Don HO <don.h@free.fr>
 
 // This program is free software: you can redistribute it and/or modify
@@ -26,7 +26,7 @@
 
 
 const TCHAR PLUGIN_NAME[] = TEXT("MIME Tools");
-const int nbFunc = 23;
+const int nbFunc = 25;
 
 HINSTANCE g_hInst = nullptr;;
 NppData nppData;
@@ -67,6 +67,9 @@ BOOL APIENTRY DllMain(HANDLE hModule, DWORD reasonForCall, LPVOID /*lpReserved*/
 
 			funcItem[21]._pFunc = NULL;
 			funcItem[22]._pFunc = about;
+			funcItem[23]._pFunc = urlconvertToBase64FromAscii;
+			funcItem[24]._pFunc = urlconvertToAsciiFromBase64;
+
 
 			lstrcpy(funcItem[0]._itemName, TEXT("Base64 Encode"));
 			lstrcpy(funcItem[1]._itemName, TEXT("Base64 Encode with padding"));
@@ -100,6 +103,11 @@ BOOL APIENTRY DllMain(HANDLE hModule, DWORD reasonForCall, LPVOID /*lpReserved*/
 
 			lstrcpy(funcItem[22]._itemName, TEXT("About"));
 
+			lstrcpy(funcItem[23]._itemName, TEXT("URL Base64 Encode"));
+			lstrcpy(funcItem[24]._itemName, TEXT("URL Base64 Decode"));
+
+
+
 			funcItem[0]._init2Check = false;
 			funcItem[1]._init2Check = false;
 			funcItem[2]._init2Check = false;
@@ -119,6 +127,8 @@ BOOL APIENTRY DllMain(HANDLE hModule, DWORD reasonForCall, LPVOID /*lpReserved*/
 			funcItem[16]._init2Check = false;
 			funcItem[17]._init2Check = false;
 			funcItem[18]._init2Check = false;
+			funcItem[22]._init2Check = false;
+			funcItem[23]._init2Check = false;
 
 			// If you don't need the shortcut, you have to make it NULL
 			funcItem[0]._pShKey = NULL;
@@ -140,6 +150,8 @@ BOOL APIENTRY DllMain(HANDLE hModule, DWORD reasonForCall, LPVOID /*lpReserved*/
 			funcItem[16]._pShKey = NULL;
 			funcItem[17]._pShKey = NULL;
 			funcItem[18]._pShKey = NULL;
+			funcItem[22]._pShKey = NULL;
+			funcItem[23]._pShKey = NULL;
 		}
 		break;
 
@@ -257,10 +269,75 @@ void convertAsciiToBase64(size_t wrapLength, bool padFlag, bool byLineFlag)
 
 }
 
+void urlconvertAsciiToBase64(size_t wrapLength, bool padFlag, bool byLineFlag)
+{
+	HWND hCurrScintilla = getCurrentScintillaHandle();
+	size_t nbSelections = ::SendMessage(hCurrScintilla, SCI_GETSELECTIONS, 0, 0);
+	if (nbSelections > 1) return;
+
+	size_t selectedLength = ::SendMessage(hCurrScintilla, SCI_GETSELTEXT, 0, 0);
+	if (selectedLength == 0) return;
+
+	char* selectedText = new char[selectedLength + 1];
+	::SendMessage(hCurrScintilla, SCI_TARGETFROMSELECTION, 0, 0);
+	::SendMessage(hCurrScintilla, SCI_GETTARGETTEXT, 0, (LPARAM)selectedText);
+
+	size_t bufferLength = (selectedLength + 2) / 3 * 4 + 1;
+	if (wrapLength > 0)
+	{
+		bufferLength += bufferLength / wrapLength;
+	}
+	char* encodedText = new char[bufferLength + 1];
+
+	int len = base64Encode(encodedText, selectedText, selectedLength, wrapLength, padFlag, byLineFlag);
+
+	if (len > 0)
+	{
+		//2.在BASE64的基础上进行一下的编码
+		//2.1 去除尾部的"="
+		if ('=' == encodedText[len - 2])
+		{
+			encodedText[len - 2] = '\0';
+			len = len - 2;
+		}
+		else if ('=' == encodedText[len - 1])
+		{
+			encodedText[len - 1] = '\0';
+			len = len - 1;
+		}
+		//        2.2)把"+"替换成"-"
+		//  2.3)把"/"替换成"_"
+		for (int i = 0; i < len; i++)
+		{
+			if ('+' == encodedText[i])
+				encodedText[i] = '-';
+			else if ('/' == encodedText[i])
+				encodedText[i] = '_';
+		}
+	}
+
+
+
+
+	encodedText[len] = '\0';
+
+	::SendMessage(hCurrScintilla, SCI_TARGETFROMSELECTION, 0, 0);
+	::SendMessage(hCurrScintilla, SCI_REPLACETARGET, len, (LPARAM)encodedText);
+
+	delete[] selectedText;
+	delete[] encodedText;
+
+}
+
 
 void convertToBase64FromAscii()
 {
 	convertAsciiToBase64(0, false, false);
+}
+
+void urlconvertToBase64FromAscii()
+{
+	urlconvertAsciiToBase64(0, false, false);
 }
 
 void convertToBase64FromAscii_pad()
@@ -316,9 +393,69 @@ void convertBase64ToAscii(bool strictFlag, bool whitespaceReset)
 
 }
 
+
+void urlconvertBase64ToAscii(bool strictFlag, bool whitespaceReset)
+{
+	HWND hCurrScintilla = getCurrentScintillaHandle();
+	size_t nbSelections = ::SendMessage(hCurrScintilla, SCI_GETSELECTIONS, 0, 0);
+	if (nbSelections > 1) return;
+	size_t selectedLength = ::SendMessage(hCurrScintilla, SCI_GETSELTEXT, 0, 0);
+	if (selectedLength == 0) return;
+
+	char* selectedText = new char[selectedLength + 1];
+	::SendMessage(hCurrScintilla, SCI_TARGETFROMSELECTION, 0, 0);
+	::SendMessage(hCurrScintilla, SCI_GETTARGETTEXT, 0, (LPARAM)selectedText);
+
+	char* decodedText = new char[selectedLength];
+
+
+
+	char* pTmpBuffer = (char*)malloc((selectedLength + 10) * sizeof(char));
+	memcpy(pTmpBuffer, selectedText, selectedLength);
+	//1、把BASE64URL的编码做如下解码
+	// 1)把"-"替换成"+".
+	// 2)把"_"替换成"/" .
+	for (int i = 0; unsigned(i) < selectedLength; i++)
+	{
+		if ('-' == pTmpBuffer[i])
+			pTmpBuffer[i] = '+';
+		else if ('_' == pTmpBuffer[i])
+			pTmpBuffer[i] = '/';
+	}
+
+
+	int len = base64Decode(decodedText, pTmpBuffer, selectedLength, strictFlag, whitespaceReset);
+
+
+
+
+
+	//int len = base64Decode(decodedText, selectedText, selectedLength, strictFlag, whitespaceReset);
+
+	if (len < 0)
+	{
+		::MessageBox(nppData._nppHandle, TEXT("Problem!"), TEXT("Base64"), MB_OK);
+	}
+	else
+	{
+		decodedText[len] = '\0';
+		::SendMessage(hCurrScintilla, SCI_TARGETFROMSELECTION, 0, 0);
+		::SendMessage(hCurrScintilla, SCI_REPLACETARGET, len, (LPARAM)decodedText);
+	}
+
+	delete[] selectedText;
+	delete[] decodedText;
+
+}
+
 void convertToAsciiFromBase64()
 {
 	convertBase64ToAscii(false, false);
+}
+
+void urlconvertToAsciiFromBase64()
+{
+	urlconvertBase64ToAscii(false, false);
 }
 
 void convertToAsciiFromBase64_strict()
